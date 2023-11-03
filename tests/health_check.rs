@@ -1,4 +1,7 @@
+use newsletter::configuration::get_configuration;
+use sqlx::{Connection, PgConnection};
 use std::net::TcpListener;
+use newsletter::startup::run;
 
 #[tokio::test]
 async fn health_check_works() {
@@ -19,7 +22,11 @@ async fn health_check_works() {
 #[tokio::test]
 async fn subscribe_returns_a_200_for_valid_form_data() {
     let address = spawn_app();
-
+    let configuration = get_configuration().expect("Failed to load configuration");
+    let connection_string = configuration.database.connection_string();
+    let mut connection = PgConnection::connect(&connection_string)
+        .await
+        .expect("Failed to connect to database");
     let client = reqwest::Client::new();
 
     let body = "name=Assane&email=test@email.com";
@@ -33,6 +40,14 @@ async fn subscribe_returns_a_200_for_valid_form_data() {
         .expect("Failed to execute request");
 
     assert_eq!(200, response.status().as_u16());
+
+    let saved = sqlx::query!("SELECT email, name FROM subscriptions",)
+        .fetch_one(&mut connection)
+        .await
+        .expect("Failed to fetch any subscription.");
+
+    assert_eq!(saved.email, "test@email.com");
+    assert_eq!(saved.name, "Assane");
 }
 
 #[tokio::test]
@@ -42,7 +57,7 @@ async fn subscribe_returns_a_400_when_data_is_missing() {
     let test_cases = vec![
         ("name=Assane", "Email is missing"),
         ("email=assane@test.com", "Name is missing"),
-        ("", "Both name and email are missing")
+        ("", "Both name and email are missing"),
     ];
 
     for (body, error_msg) in test_cases {
@@ -58,14 +73,15 @@ async fn subscribe_returns_a_400_when_data_is_missing() {
             400,
             response.status().as_u16(),
             "The API did not fail with 400 Bad Request when the payload was {}",
-            error_msg);
+            error_msg
+        );
     }
 }
 
 fn spawn_app() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind random port");
     let port = listener.local_addr().unwrap().port();
-    let server = newsletter::run(listener).expect("Failed to bind address");
+    let server = run(listener).expect("Failed to bind address");
     let _ = tokio::spawn(server);
     format!("http://127.0.0.1:{}", port)
 }
